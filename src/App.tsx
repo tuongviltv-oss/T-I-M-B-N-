@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Package, 
@@ -14,8 +14,141 @@ import {
   CheckCircle2, 
   XCircle, 
   Lightbulb,
-  ChevronRight
+  ChevronRight,
+  Volume2,
+  VolumeX
 } from 'lucide-react';
+
+// --- Sound Service ---
+class SoundManager {
+  private ctx: AudioContext | null = null;
+  private masterGain: GainNode | null = null;
+  private bgmOsc: OscillatorNode | null = null;
+  private isMuted: boolean = false;
+
+  init() {
+    if (this.ctx) return;
+    this.ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    this.masterGain = this.ctx.createGain();
+    this.masterGain.connect(this.ctx.destination);
+    this.masterGain.gain.value = 0.3;
+  }
+
+  setMute(mute: boolean) {
+    this.isMuted = mute;
+    if (this.masterGain) {
+      this.masterGain.gain.value = mute ? 0 : 0.3;
+    }
+  }
+
+  private playTone(freq: number, type: OscillatorType, duration: number, volume: number = 0.5, decay: boolean = true) {
+    if (!this.ctx || this.isMuted) return;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+    
+    gain.gain.setValueAtTime(volume, this.ctx.currentTime);
+    if (decay) {
+      gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + duration);
+    } else {
+      gain.gain.setValueAtTime(volume, this.ctx.currentTime + duration);
+    }
+    
+    osc.connect(gain);
+    gain.connect(this.masterGain!);
+    
+    osc.start();
+    osc.stop(this.ctx.currentTime + duration);
+    return { osc, gain };
+  }
+
+  private playNoise(duration: number, volume: number = 0.5) {
+    if (!this.ctx || this.isMuted) return;
+    const bufferSize = this.ctx.sampleRate * duration;
+    const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+      data[i] = Math.random() * 2 - 1;
+    }
+
+    const noise = this.ctx.createBufferSource();
+    noise.buffer = buffer;
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(volume, this.ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + duration);
+
+    noise.connect(gain);
+    gain.connect(this.masterGain!);
+    noise.start();
+  }
+
+  playCorrect() {
+    // "Ting"
+    this.playTone(987.77, 'sine', 0.2, 0.4); // B5
+    // "Clapping"
+    for (let i = 0; i < 4; i++) {
+      setTimeout(() => this.playNoise(0.15, 0.2), i * 60);
+    }
+  }
+
+  playIncorrect() {
+    // "Bụp nhẹ" (Thud)
+    this.playTone(110, 'triangle', 0.2, 0.5); // A2
+    this.playTone(80, 'sine', 0.2, 0.6); // Low thud
+  }
+
+  playPop() {
+    this.playTone(880, 'sine', 0.05, 0.3);
+  }
+
+  playVictory() {
+    // Victory Chime
+    const notes = [523.25, 659.25, 783.99, 1046.50]; // C5, E5, G5, C6
+    notes.forEach((freq, i) => {
+      setTimeout(() => this.playTone(freq, 'sine', 0.5, 0.3), i * 150);
+    });
+  }
+
+  playTick() {
+    this.playTone(440, 'sine', 0.02, 0.05);
+  }
+
+  startBGM() {
+    if (!this.ctx || this.bgmOsc) return;
+    
+    // Simple Piano-like loop (Arpeggio)
+    const playPianoNote = (freq: number, time: number) => {
+      if (!this.ctx) return;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, time);
+      gain.gain.setValueAtTime(0.03, time);
+      gain.gain.exponentialRampToValueAtTime(0.001, time + 1.5);
+      osc.connect(gain);
+      gain.connect(this.masterGain!);
+      osc.start(time);
+      osc.stop(time + 1.5);
+    };
+
+    const loop = () => {
+      if (!this.ctx || this.isMuted) return;
+      const now = this.ctx.currentTime;
+      const scale = [261.63, 329.63, 392.00, 523.25]; // C4, E4, G4, C5
+      scale.forEach((freq, i) => {
+        playPianoNote(freq, now + i * 0.5);
+      });
+      setTimeout(loop, 2000);
+    };
+
+    loop();
+    this.bgmOsc = {} as any;
+  }
+}
+
+const soundManager = new SoundManager();
 
 // --- Types & Constants ---
 
@@ -129,6 +262,7 @@ export default function App() {
   const [gameState, setGameState] = useState<GameState>('SETUP');
   const [playerName, setPlayerName] = useState<string>('');
   const [playerAvatar, setPlayerAvatar] = useState<string>(AVATARS[0]);
+  const [isMuted, setIsMuted] = useState<boolean>(false);
   const [currentBagIndex, setCurrentBagIndex] = useState<number>(0);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState<number>(0);
   const [score, setScore] = useState<number>(0);
@@ -138,6 +272,7 @@ export default function App() {
   const [isCorrect, setIsCorrect] = useState<boolean | null>(null);
   const [completedBags, setCompletedBags] = useState<number[]>([]);
   const [openingCountdown, setOpeningCountdown] = useState<number>(3);
+  const [showConfetti, setShowConfetti] = useState<boolean>(false);
 
   // --- Game Logic ---
 
@@ -145,6 +280,7 @@ export default function App() {
   const currentQuestion = currentBag.questions[currentQuestionIndex];
 
   const startBag = (index: number) => {
+    soundManager.playPop();
     setCurrentBagIndex(index);
     setCurrentQuestionIndex(0);
     setGameState('OPENING');
@@ -157,6 +293,7 @@ export default function App() {
       resetQuestionState();
       setGameState('QUESTION');
     } else {
+      soundManager.playVictory();
       setCompletedBags(prev => [...prev, currentBag.id]);
       if (completedBags.length + 1 === QUESTIONS.length) {
         setGameState('RESULT');
@@ -171,6 +308,7 @@ export default function App() {
     setHintUsed(false);
     setSelectedOption(null);
     setIsCorrect(null);
+    setShowConfetti(false);
   };
 
   const handleAnswer = (option: string) => {
@@ -181,17 +319,22 @@ export default function App() {
     setIsCorrect(correct);
 
     if (correct) {
+      soundManager.playCorrect();
+      setShowConfetti(true);
       const points = hintUsed ? 5 : 10;
       setScore(prev => prev + points);
       setTimeout(() => {
+        setShowConfetti(false);
         nextQuestion();
       }, 1500);
     } else {
+      soundManager.playIncorrect();
       setGameState('HINT');
     }
   };
 
   const handleRetry = () => {
+    soundManager.playPop();
     setHintUsed(true);
     setTimer(25);
     setSelectedOption(null);
@@ -205,9 +348,11 @@ export default function App() {
   useEffect(() => {
     if (gameState === 'OPENING') {
       if (openingCountdown > 0) {
+        soundManager.playTick();
         const t = setTimeout(() => setOpeningCountdown(prev => prev - 1), 1000);
         return () => clearTimeout(t);
       } else {
+        soundManager.playPop();
         resetQuestionState();
         setGameState('QUESTION');
       }
@@ -217,12 +362,28 @@ export default function App() {
   // Question Timer
   useEffect(() => {
     if (gameState === 'QUESTION' && timer > 0 && !selectedOption) {
+      if (timer <= 5) soundManager.playTick();
       const t = setInterval(() => setTimer(prev => prev - 1), 1000);
       return () => clearInterval(t);
     } else if (gameState === 'QUESTION' && timer === 0 && !selectedOption) {
+      soundManager.playIncorrect();
       setGameState('TIMEOUT');
     }
   }, [gameState, timer, selectedOption]);
+
+  const toggleMute = () => {
+    soundManager.playPop();
+    const newMute = !isMuted;
+    setIsMuted(newMute);
+    soundManager.setMute(newMute);
+  };
+
+  const handleStartGame = () => {
+    soundManager.playPop();
+    soundManager.init();
+    soundManager.startBGM();
+    setGameState('HOME');
+  };
 
   // --- Render Helpers ---
 
@@ -237,10 +398,20 @@ export default function App() {
     <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-blue-900 text-white font-sans overflow-hidden flex flex-col items-center justify-center p-4">
       
       {/* Score Header (Visible during game) */}
-      {gameState !== 'HOME' && gameState !== 'RESULT' && (
-        <div className="fixed top-6 right-6 flex items-center gap-3 bg-white/10 backdrop-blur-md px-4 py-2 rounded-full border border-white/20 z-50">
-          <Star className="text-yellow-400 fill-yellow-400" size={20} />
-          <span className="font-bold text-xl tracking-wider">ĐIỂM: {score}</span>
+      {gameState !== 'SETUP' && (
+        <div className="fixed top-6 right-6 flex items-center gap-4 z-50">
+          <button 
+            onClick={toggleMute}
+            className="bg-white/10 backdrop-blur-md p-2 rounded-full border border-white/20 hover:bg-white/20 transition-colors"
+          >
+            {isMuted ? <VolumeX size={20} /> : <Volume2 size={20} />}
+          </button>
+          {gameState !== 'HOME' && gameState !== 'RESULT' && (
+            <div className="flex items-center gap-3 bg-white/10 backdrop-blur-md px-4 py-2 rounded-full border border-white/20">
+              <Star className="text-yellow-400 fill-yellow-400" size={20} />
+              <span className="font-bold text-xl tracking-wider">ĐIỂM: {score}</span>
+            </div>
+          )}
         </div>
       )}
 
@@ -265,7 +436,10 @@ export default function App() {
                     key={avatar}
                     whileHover={{ scale: 1.1 }}
                     whileTap={{ scale: 0.9 }}
-                    onClick={() => setPlayerAvatar(avatar)}
+                    onClick={() => {
+                      soundManager.playPop();
+                      setPlayerAvatar(avatar);
+                    }}
                     className={`text-3xl p-3 rounded-xl transition-all ${playerAvatar === avatar ? 'bg-yellow-400 shadow-[0_0_15px_rgba(250,204,21,0.5)] scale-110' : 'bg-white/5 hover:bg-white/10'}`}
                   >
                     {avatar}
@@ -289,7 +463,7 @@ export default function App() {
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
               disabled={!playerName.trim()}
-              onClick={() => setGameState('HOME')}
+              onClick={handleStartGame}
               className="w-full bg-gradient-to-r from-yellow-400 to-orange-500 text-white py-4 rounded-xl text-xl font-black shadow-xl disabled:opacity-50 disabled:cursor-not-allowed"
             >
               BẮT ĐẦU NGAY!
@@ -538,7 +712,28 @@ export default function App() {
             </div>
 
             {/* Options Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 relative">
+              {/* Correct Answer Confetti */}
+              {showConfetti && (
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-50">
+                  {[...Array(20)].map((_, i) => (
+                    <motion.div
+                      key={`correct-confetti-${i}`}
+                      initial={{ scale: 0, x: 0, y: 0 }}
+                      animate={{ 
+                        scale: [0, 1, 0],
+                        x: (Math.random() - 0.5) * 400,
+                        y: (Math.random() - 0.5) * 400,
+                        rotate: Math.random() * 360,
+                      }}
+                      transition={{ duration: 1, ease: "easeOut" }}
+                      className={`absolute w-3 h-3 rounded-full ${
+                        ['bg-yellow-400', 'bg-green-400', 'bg-blue-400', 'bg-white'][i % 4]
+                      }`}
+                    />
+                  ))}
+                </div>
+              )}
               {currentQuestion.options.map((option, idx) => {
                 const isSelected = selectedOption === option;
                 
@@ -550,6 +745,13 @@ export default function App() {
                 return (
                   <motion.button
                     key={idx}
+                    animate={isSelected && !isCorrect ? {
+                      x: [0, -10, 10, -10, 10, 0],
+                      transition: { duration: 0.4 }
+                    } : isSelected && isCorrect ? {
+                      scale: [1, 1.1, 1],
+                      transition: { duration: 0.3 }
+                    } : {}}
                     whileHover={{ scale: 1.02 }}
                     whileTap={{ scale: 0.98 }}
                     onClick={() => handleAnswer(option)}
@@ -625,7 +827,10 @@ export default function App() {
             <motion.button
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
-              onClick={nextQuestion}
+              onClick={() => {
+                soundManager.playPop();
+                nextQuestion();
+              }}
               className="mt-4 bg-white text-indigo-900 px-10 py-4 rounded-full text-xl font-black flex items-center gap-2"
             >
               TIẾP TỤC <ChevronRight />
@@ -675,7 +880,10 @@ export default function App() {
             <motion.button
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
-              onClick={() => window.location.reload()}
+              onClick={() => {
+                soundManager.playPop();
+                window.location.reload();
+              }}
               className="bg-gradient-to-r from-yellow-400 to-orange-500 text-white px-12 py-4 rounded-full text-2xl font-black shadow-2xl flex items-center gap-3"
             >
               <RotateCcw size={24} /> CHƠI LẠI
